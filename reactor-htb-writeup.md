@@ -208,12 +208,7 @@ Once a debugging session was established, the current process UID was verified:
 
 
 
-With root-level code execution available via the inspector, the **root flag** was read directly from the filesystem.
-
-```javascript
-> require('fs').readFileSync('/root/root.txt', 'utf8')
-'HTB{REDACTED}'
-```
+With root level code execution available via the inspector, the **root flag** was read directly from the filesystem when privileges were successfully escalated
 
 <!-- 📸 IMAGE: Root flag captured -->
 <img width="661" height="310" alt="image" src="https://github.com/user-attachments/assets/370bec3b-4a63-4168-84c5-031754afb7db" />
