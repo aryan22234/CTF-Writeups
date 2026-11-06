@@ -34,7 +34,11 @@
 
 ### Identifying the RSA Parameters
 
-The RSA public key parameters were obtained as part of the investigation:
+During the investigation, a text file containing the RSA public key parameters was discovered at `/tmp/key.txt`:
+
+```bash
+cat /tmp/key.txt
+```
 
 ```
 n = 340282366920938460843936948965011886881
